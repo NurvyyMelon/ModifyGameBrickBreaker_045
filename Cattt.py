@@ -1729,3 +1729,446 @@ class Game:
             self.burst(br.rect.centerx, br.rect.centery, WHITE, 3)
             self.score += 1
             sfx("tough")
+
+# --- boss
+    def boss_hit(self, dmg):
+        bs = self.boss
+        if not bs or bs.inv > 0:
+            return
+        bs.hp -= dmg
+        bs.inv = 8
+        self.score += 2
+        sfx("bosshit")
+        self.burst(bs.rect.centerx, bs.rect.centery, (255, 120, 120), 6)
+        if bs.hp <= 0:
+            self.kill_boss()
+
+    def kill_boss(self):
+        bs = self.boss
+        bonus = 150 + 50 * bs.tier
+        self.score += bonus
+        coins = 40 + 10 * bs.tier
+        self.gain_coins(coins)
+        cx, cy = bs.rect.center
+        for col in ((255, 120, 120), YELLOW, WHITE, (150, 150, 172)):
+            self.burst(cx, cy, col, 14)
+        self.rings.append([cx, cy, 4.0, 18])
+        self.shake = 16
+        sfx("boom")
+        self.floater("BOSS KALAH!  +%d" % bonus, -1, 70, YELLOW)
+        self.floater("+%d KOIN" % coins, -1, 82, YELLOW)
+        for dx in (-22, 0, 22):
+            self.fishes.append([cx + dx - 4.0, float(cy), "life"])
+        self.boss = None
+        self.projs.clear()
+        self.upgrade_delay = 70
+
+    def update_boss(self):
+        bs = self.boss
+        if not bs:
+            return
+        pr = self.paddle.rect
+        if bs.inv > 0:
+            bs.inv -= 1
+        if bs.kind == 2:
+            self.update_elang(bs, pr)
+            if self.state != "play":
+                return
+        else:
+            self.boss_patrol(bs)
+            bs.cd -= 1
+            if bs.cd <= 0:
+                self.boss_attack(bs, pr)
+        for c in self.projs[:]:
+            c[0] += c[2]
+            c[1] += c[3]
+            if pygame.Rect(int(c[0]), int(c[1]), 6, 5).colliderect(pr):
+                self.projs.remove(c)
+                self.floater(HIT_MSG[c[4]], -1, pr.top - 14, (255, 110, 130))
+                self.lose_life(False)
+                if self.state != "play":
+                    return
+            elif c[1] > LH or c[0] < -8 or c[0] > LW + 8:
+                self.projs.remove(c)
+
+    @staticmethod
+    def boss_patrol(bs):
+        bs.x += bs.dir * bs.speed
+        if bs.x <= 4:
+            bs.dir = 1
+        elif bs.x + bs.W >= LW - 4:
+            bs.dir = -1
+
+    def boss_attack(self, bs, pr):
+        r = bs.rect
+        cx, by = r.centerx, r.bottom
+        half = bs.hp < bs.maxhp / 2
+        tier = bs.tier
+        if bs.kind == 0:       # Tikus: jatuhkan keju
+            vy = 1.0 + 0.05 * tier
+            self.projs.append([cx + random.randint(-8, 8) - 3.0, float(by), 0.0, vy, "cheese"])
+            if half:
+                self.projs.append([cx + random.choice([-16, 16]) - 3.0, float(by), 0.0, vy, "cheese"])
+            bs.cd = max(45, random.randint(70, 110) - tier * 5)
+        elif bs.kind == 1:     # Anjing: tembak tulang menyebar
+            n = 5 if half else 3
+            for i in range(n):
+                self.projs.append([cx - 3.0, float(by), (i - (n - 1) / 2) * 0.5, 1.1, "bone"])
+            sfx("wall")
+            bs.cd = max(60, random.randint(95, 135) - tier * 5)
+        else:                  # Gurita: tinta mengincar kucing
+            base = math.atan2(pr.centery - by, pr.centerx - cx)
+            sp = 1.3 + 0.05 * tier
+            for off in ((-0.3, 0, 0.3) if half else (0,)):
+                a = base + off
+                self.projs.append([cx - 3.0, float(by), math.cos(a) * sp, math.sin(a) * sp, "ink"])
+            sfx("wall")
+            bs.cd = max(45, random.randint(75, 115) - tier * 5)
+
+    def update_elang(self, bs, pr):
+        if bs.state == "patrol":
+            self.boss_patrol(bs)
+            bs.timer -= 1
+            if bs.timer <= 0:
+                bs.state, bs.timer = "warn", 45
+                sfx("warn")
+        elif bs.state == "warn":
+            bs.target = pr.centerx
+            bs.timer -= 1
+            if bs.timer <= 0:
+                bs.state = "dive"
+                bs.hit_flag = False
+                bs.tx = bs.target - bs.W / 2
+                sfx("dive")
+        elif bs.state == "dive":
+            bs.x += max(-2.2, min(2.2, bs.tx - bs.x))
+            bs.y += 3.2
+            if not bs.hit_flag and bs.rect.colliderect(pr):
+                bs.hit_flag = True
+                self.floater(HIT_MSG["dive"], -1, pr.top - 14, (255, 110, 130))
+                self.lose_life(False)
+                if self.state != "play":
+                    return
+            if bs.y >= 128:
+                bs.y = 128.0
+                bs.state = "rise"
+        elif bs.state == "rise":
+            bs.y -= 1.8
+            if bs.y <= bs.base_y:
+                bs.y = bs.base_y
+                bs.state = "patrol"
+                bs.timer = max(70, random.randint(120, 190) - bs.tier * 8)
+        bs.x = max(4, min(LW - bs.W - 4, bs.x))
+
+    def update_fishes(self):
+        pr = self.paddle.rect
+        mg = self.up["magnet"] + (1 if self.op else 0)
+        for f in self.fishes[:]:
+            f[1] += 0.7
+            if mg and f[1] > 20:
+                f[0] += max(-0.6 * mg, min(0.6 * mg, (pr.centerx - 4 - f[0]) * 0.05))
+            fr = pygame.Rect(int(f[0]), int(f[1]), 8, 5)
+            if fr.colliderect(pr):
+                self.fishes.remove(f)
+                sfx("fish")
+                if f[2] == "rain":
+                    self.score += 25
+                    self.gain_coins(1)
+                    self.burst(fr.centerx, fr.centery, YELLOW, 4)
+                    continue
+                sfx("meow")
+                self.gain_coins(2)
+                if self.lives < self.max_lives:
+                    self.lives += 1
+                    self.floater("MEOW! +1 NYAWA", -1, pr.top - 14, FISH_C)
+                else:
+                    self.score += 50
+                    self.floater("MEOW! +50", -1, pr.top - 14, FISH_C)
+
+    # --- gambar
+    def theme(self):
+        if self.state in ("title", "select", "upgrade"):
+            return 0
+        if self.state == "gacha":
+            return 1
+        if self.boss:
+            return 2
+        return (0, 1, 3)[(self.level - 1) % 3]
+
+    def draw_bg(self):
+        c = canvas
+        c.blit(get_bg(self.theme()), (0, 0))
+        cols = ((90, 80, 130), (135, 125, 185), (215, 205, 250))
+        for sx, sy, ly in self.stars:
+            y = int(sy + self.t * (0.05, 0.12, 0.22)[ly]) % LH
+            if ly == 0 or int(self.t / 20 + sx) % 3:
+                c.set_at((sx, y), cols[ly])
+                if ly == 2 and int(self.t / 15 + sx) % 4 == 0:
+                    c.set_at((sx + 1, y), cols[1])
+                    c.set_at((sx - 1, y), cols[1])
+                    c.set_at((sx, y + 1), cols[1])
+                    c.set_at((sx, y - 1), cols[1])
+        ph = self.t % 420          # bintang jatuh
+        if ph < 24:
+            rnd = random.Random(self.t // 420)
+            x0, y0 = rnd.randint(70, 190), rnd.randint(4, 40)
+            for k in range(7):
+                px = x0 - (ph - k) * 4
+                py = y0 + (ph - k) * 2
+                c.set_at((px, py), shade(WHITE, -k * 28))
+
+    def draw_fx(self):
+        c = canvas
+        for p in self.particles:
+            if p[4] > 18:
+                pygame.draw.rect(c, p[5], (int(p[0]), int(p[1]), 2, 2))
+            else:
+                c.set_at((int(p[0]), int(p[1])), p[5])
+        for r in self.rings:
+            pygame.draw.circle(c, YELLOW if r[3] % 2 else (255, 160, 60), (int(r[0]), int(r[1])), int(r[2]), 1)
+
+    def draw(self):
+        self.draw_bg()
+        st = self.state
+        if st == "title":
+            self.draw_title()
+        elif st == "select":
+            self.draw_select()
+        elif st == "gacha":
+            self.draw_gacha()
+        elif st == "upgrade":
+            self.draw_upgrade()
+        else:
+            self.draw_world()
+
+    def draw_world(self):
+        c = canvas
+        for br in self.bricks:
+            br.draw(c)
+        if self.boss:
+            self.boss.draw(c, self.t)
+        for f in self.fishes:
+            draw_fish(c, int(f[0]), int(f[1]), YELLOW)
+        for px, py, _, _, kind in self.projs:
+            draw_proj(c, int(px), int(py), kind)
+        scol = YELLOW if self.op else WHITE
+        for sx, sy in self.shots:
+            pygame.draw.line(c, scol, (int(sx), int(sy)), (int(sx), int(sy) + 3))
+            c.set_at((int(sx), int(sy)), PINK if not self.op else WHITE)
+        self.draw_fx()
+        for b in self.balls:
+            b.draw(c)
+        if self.shield_on and (self.skill_active > 90 or (self.t // 6) % 2):
+            pygame.draw.rect(c, (255, 120, 170) if self.char == 5 else (255, 215, 90), (0, LH - 3, LW, 2))
+            for hx in range(6, LW, 24):
+                c.set_at((hx, LH - 4), PINK)
+                c.set_at((hx + 2, LH - 4), PINK)
+        glow = self.skill_active > 0 and (self.char == 0 or self.op)
+        self.paddle.draw(c, self.t, glow)
+
+        if self.char == 1 and self.skill_active > 0:
+            tint = pygame.Surface((LW, LH), pygame.SRCALPHA)
+            tint.fill((90, 140, 255, 28))
+            c.blit(tint, (0, 0))
+        if self.op and self.skill_active > 0:
+            tint = pygame.Surface((LW, LH), pygame.SRCALPHA)
+            tint.fill((255, 215, 90, 16 + (self.t // 4) % 2 * 6))
+            c.blit(tint, (0, 0))
+
+        for s, x, y, life, col in self.floaters:
+            txt(s, "s", col, cx=LW // 2 if x < 0 else None, x=int(x), y=int(y))
+
+        # HUD
+        c.blit(HUD_BAR, (0, 0))
+        pygame.draw.line(c, (70, 56, 120), (0, 11), (LW, 11))
+        txt("SKOR %d" % self.score, "s", WHITE, x=3, y=3)
+        txt("LV %d" % self.level, "s", YELLOW, cx=LW // 2, y=3)
+        for i in range(self.lives):
+            mini_cat(c, LW - 9 - i * 9, 3, self.cat["pal"])
+        self.draw_skill_hud()
+        txt("KUCING LV %d" % self.cat_level, "xs", (150, 140, 190), x=3, y=153)
+        draw_coin(c, 150, 156)
+        txt("%d" % SAVE["coins"], "xs", YELLOW, x=155, y=153)
+        if self.boss:
+            bs = self.boss
+            txt(bs.name, "xs", (255, 150, 160), cx=150, y=12)
+            pygame.draw.rect(c, (50, 20, 40), (108, 19, 84, 4))
+            pygame.draw.rect(c, (230, 50, 80), (108, 19, int(84 * max(0, bs.hp) / bs.maxhp), 4))
+            pygame.draw.rect(c, WHITE, (107, 18, 86, 6), 1)
+
+        if self.state == "play" and self.balls[0].stuck and (self.t // 30) % 2:
+            txt("SPASI / KLIK untuk meluncur", "s", WHITE, cx=LW // 2, y=LH // 2 + 22)
+            txt("P = jeda", "xs", GRAY, cx=LW // 2, y=LH // 2 + 32)
+
+        if self.state == "pause":
+            self.draw_pause()
+        elif self.state == "over":
+            ov = pygame.Surface((LW, LH), pygame.SRCALPHA)
+            ov.fill((10, 5, 20, 200))
+            c.blit(ov, (0, 0))
+            txt("GAME OVER", "b", (255, 110, 130), cx=LW // 2, y=20, wave=5)
+            panel(c, (36, 50, 128, 50))
+            txt("Skor  %d" % self.score, "m", WHITE, cx=LW // 2, y=52)
+            txt("Terbaik  %d" % self.hi, "xs", YELLOW, cx=LW // 2, y=72)
+            draw_coin(c, 48, 87)
+            txt("Koin didapat  +%d   (total %d)" % (self.run_coins, SAVE["coins"]), "xs", YELLOW,
+                x=54, y=84)
+            txt("%s kecewa... :(" % self.cat["name"].capitalize(), "s", PINK, cx=LW // 2, y=104)
+            if (self.t // 30) % 2:
+                txt("SPASI = main lagi", "s", YELLOW, cx=LW // 2, y=118)
+            txt("C = ganti kucing    G = gacha", "xs", GRAY, cx=LW // 2, y=134)
+
+    def draw_pause(self):
+        c = canvas
+        ov = pygame.Surface((LW, LH), pygame.SRCALPHA)
+        ov.fill((8, 4, 20, 175))
+        c.blit(ov, (0, 0))
+        panel(c, (44, 36, 112, 90), fill=(22, 14, 46, 240))
+        txt("JEDA", "m", None, cx=LW // 2, y=40, rainbow=True, wave=2)
+        labels = ["LANJUT", "MUSIK: %s" % ("ON" if music_on else "OFF"), "MENU UTAMA"]
+        for i, lab in enumerate(labels):
+            r = pmenu_rect(i)
+            sel = i == self.pmenu
+            if sel:
+                pygame.draw.rect(c, (60, 44, 110), r, border_radius=2)
+                pygame.draw.rect(c, YELLOW, r, 1, border_radius=2)
+                pygame.draw.polygon(c, YELLOW, [(r.x + 4, r.y + 3), (r.x + 4, r.y + 9), (r.x + 8, r.y + 6)])
+            txt(lab, "s", YELLOW if sel else GRAY, cx=r.centerx + 3, y=r.y + 2)
+        txt("P / ESC = lanjut", "xs", GRAY, cx=LW // 2, y=112)
+
+    def draw_skill_hud(self):
+        c = canvas
+        cat = self.cat
+        if self.skill_active > 0:
+            label, col = "%s AKTIF!" % cat["skill"].upper(), GREEN
+            frac = self.skill_active / max(1, self.skill_dur_max)
+            bar_col = col
+        elif self.skill_cd > 0:
+            label, col = "%s  %ds" % (cat["skill"], self.skill_cd // 60 + 1), GRAY
+            frac = 1 - self.skill_cd / max(1, self.skill_cd_max)
+            bar_col = (110, 100, 160)
+        else:
+            blink = (self.t // 15) % 2
+            label, col = "[E] %s SIAP!" % cat["skill"].upper(), (YELLOW if blink else WHITE)
+            frac = 1
+            bar_col = YELLOW
+        txt(label, "xs", col, x=3, y=12)
+        pygame.draw.rect(c, (30, 22, 56), (3, 21, 52, 4))
+        pygame.draw.rect(c, bar_col, (4, 22, int(50 * frac), 2))
+        pygame.draw.rect(c, (110, 100, 160), (3, 21, 52, 4), 1)
+        if frac >= 1 and self.skill_active == 0:
+            sx = 4 + (self.t * 2) % 50
+            c.set_at((sx, 22), WHITE)
+
+    def draw_title(self):
+        c = canvas
+        txt("NEKO", "b", ORANGE, cx=LW // 2, y=6, wave=5)
+        txt("BLOCK BREAKER", "b", None, cx=LW // 2, y=27, wave=4, rainbow=True)
+        # deretan brick dekorasi bergelombang
+        for i in range(12):
+            yy = 62 + int(math.sin(self.t * 0.06 + i * 0.5) * 3)
+            b = Brick(8 + i * 16, yy, "n", ROW_COLORS[i % len(ROW_COLORS)])
+            b.draw(c)
+        k = (self.t // 90) % N_CATS
+        demo = Paddle(CATS[k]["pal"])
+        demo.x = LW / 2 - demo.w / 2
+        demo.y = 98
+        demo.tier = min(7, k)
+        demo.draw(c, self.t)
+        bx = LW / 2 + math.sin(self.t * 0.05) * 40
+        by = 84 - abs(math.sin(self.t * 0.12)) * 12
+        pygame.draw.circle(c, YARN, (int(bx), int(by)), 3)
+        c.set_at((int(bx) - 1, int(by) - 1), WHITE)
+        draw_fish(c, 40, 102 + int(math.sin(self.t * 0.1) * 2), FISH_C)
+        draw_fish(c, 152, 102 + int(math.cos(self.t * 0.1) * 2), YELLOW)
+        if (self.t // 30) % 2:
+            txt("SPASI / KLIK untuk mulai", "s", YELLOW, cx=LW // 2, y=116)
+        txt("9 kucing - 4 boss - GACHA - kucing OP!", "xs", (200, 190, 230), cx=LW // 2, y=131)
+        txt("G = gacha     M = musik     V = CRT", "xs", GRAY, cx=LW // 2, y=142)
+        draw_coin(c, 8, 154)
+        txt("%d" % SAVE["coins"], "xs", YELLOW, x=13, y=151)
+        txt("Terbaik %d" % self.hi, "xs", GRAY, x=150, y=151)
+
+    def draw_select(self):
+        c = canvas
+        txt("PILIH KUCINGMU", "m", None, cx=LW // 2, y=3, rainbow=True, wave=3)
+        draw_coin(c, 166, 6)
+        txt("%d" % SAVE["coins"], "xs", YELLOW, x=171, y=2)
+        for i in range(N_SLOTS):
+            r = card_rect(i)
+            sel = i == self.sel
+            if sel:
+                r = r.move(0, -1)
+            if i == GACHA_SLOT:
+                panel(c, r, fill=(52, 34, 70, 235) if sel else (30, 20, 52, 225),
+                      border=YELLOW if sel else (210, 150, 70))
+                draw_capsule(c, r.centerx, r.y + 18, 8, rainbow_color(self.t // 6))
+                txt("GACHA", "s", YELLOW if sel else GRAY, cx=r.centerx, y=r.y + 26)
+                continue
+            cat = CATS[i]
+            owned = i in SAVE["owned"]
+            rar = RARITY[cat["rarity"]]
+            border = YELLOW if sel else (shade(rar["col"], -70) if owned else (60, 50, 90))
+            panel(c, r, fill=(40, 28, 78, 235) if sel else (24, 16, 48, 225), border=border)
+            pd = Paddle(cat["pal"] if owned else SIL_PAL)
+            pd.x = r.x + (CARD_W - pd.w) / 2 - 1
+            pd.y = r.y + 14
+            pd.draw(c, self.t if sel else 1)
+            for k in range(rar["stars"]):
+                c.set_at((r.x + 3 + k * 2, r.y + 3), rar["col"])
+                c.set_at((r.x + 3 + k * 2, r.y + 4), shade(rar["col"], -60))
+            if owned and i == self.char:
+                pygame.draw.rect(c, GREEN, (r.right - 6, r.y + 3, 3, 3))
+            if not sel:
+                dim = pygame.Surface((r.w, r.h), pygame.SRCALPHA)
+                dim.fill((15, 10, 30, 55))
+                c.blit(dim, r.topleft)
+            if owned:
+                txt(cat["name"], "s", YELLOW if sel else GRAY, cx=r.centerx, y=r.y + 26)
+            else:
+                txt("???", "s", (110, 100, 150), cx=r.centerx, y=r.y + 26)
+
+        panel(c, (6, 101, 188, 47), border=(160, 130, 255))
+        if self.sel == GACHA_SLOT:
+            draw_capsule(c, 17, 126, 8, rainbow_color(self.t // 6))
+            txt("GACHA KUCING", "s", YELLOW, cx=LW // 2 + 6, y=103)
+            txt("Putar koin jadi kucing baru, ada yang OP!", "xs", WHITE, cx=LW // 2 + 6, y=114)
+            txt("1x = %d koin    10x = %d koin" % (GACHA_COST1, GACHA_COST10), "xs",
+                (200, 190, 230), cx=LW // 2 + 6, y=123)
+            txt("Kamu punya %d koin  -  %d/%d kucing" % (SAVE["coins"], len(SAVE["owned"]), N_CATS),
+                "xs", GRAY, cx=LW // 2 + 6, y=132)
+        else:
+            cat = CATS[self.sel]
+            rar = RARITY[cat["rarity"]]
+            owned = self.sel in SAVE["owned"]
+            if owned:
+                draw_icon(c, cat["icon"], 17, 124)
+                txt("SKILL: " + cat["skill"].upper(), "s", YELLOW, cx=LW // 2 + 2, y=103)
+                txt(cat["d1"], "xs", WHITE, cx=LW // 2 + 6, y=114)
+                txt(cat["d2"], "xs", (200, 190, 230), cx=LW // 2 + 6, y=123)
+                txt("Cooldown %d detik  -  tombol E / SHIFT / klik kanan" % (cat["cd"] // 60),
+                    "xs", GRAY, cx=LW // 2 + 6, y=132)
+            else:
+                txt("?", "m", (110, 100, 150), cx=17, y=114)
+                txt("KUCING TERKUNCI", "s", (150, 140, 190), cx=LW // 2 + 2, y=103)
+                txt("Dapatkan lewat GACHA kucing (tekan G)", "xs", WHITE, cx=LW // 2 + 6, y=114)
+                txt("Peluang %d%% per tarikan  -  %s" % (rar["w"], rar["name"]), "xs",
+                    rar["col"], cx=LW // 2 + 6, y=123)
+                txt("Duplikat otomatis jadi koin", "xs", GRAY, cx=LW // 2 + 6, y=132)
+            txt(rar["name"], "xs", rar["col"], cx=176, y=103)
+        if self.msg_t > 0 and (self.t // 6) % 2:
+            txt(self.msg, "s", RED, cx=LW // 2, y=149)
+        elif (self.t // 30) % 2:
+            txt("panah/mouse pilih    SPASI mulai    G gacha", "xs", WHITE, cx=LW // 2, y=150)
+
+    def draw_gacha(self):
+        c = canvas
+        txt("GACHA KUCING", "m", None, cx=LW // 2, y=3, rainbow=True, wave=3)
+        panel(c, (64, 19, 72, 11))
+        draw_coin(c, 72, 24)
+        txt("KOIN  %d" % SAVE["coins"], "xs", YELLOW, x=78, y=20)
+
+        if self.gstate == "reveal":
+            self.draw_reveal()
+            self.draw_fx()
+            return

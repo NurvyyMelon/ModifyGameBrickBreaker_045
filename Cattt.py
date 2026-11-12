@@ -468,7 +468,8 @@ def music_update(play, paused=False):
             MUSIC_CH.unpause()
     else:
         MUSIC_CH.stop()
-        
+
+
 # ---------------------------------------------------------------- Sprite kecil
 def mini_cat(surf, x, y, pal):
     """Ikon kepala kucing 7x6 (untuk nyawa)."""
@@ -1730,7 +1731,7 @@ class Game:
             self.score += 1
             sfx("tough")
 
-# --- boss
+    # --- boss
     def boss_hit(self, dmg):
         bs = self.boss
         if not bs or bs.inv > 0:
@@ -2172,8 +2173,8 @@ class Game:
             self.draw_reveal()
             self.draw_fx()
             return
-        
-# kapsul
+
+        # kapsul
         bx, by = 100, 58
         if self.gstate == "open":
             amp = 1 + (80 - self.gtimer) / 14

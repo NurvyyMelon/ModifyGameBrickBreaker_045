@@ -344,3 +344,127 @@ FADE.fill((0, 0, 0))
 FADE_T = 14
 HUD_BAR = pygame.Surface((LW, 12), pygame.SRCALPHA)
 HUD_BAR.fill((10, 6, 24, 150))
+
+# ---------------------------------------------------------------- Suara (sintesis)
+RATE = 22050
+SND = {}
+MUSIC_CH = None
+music_on = True
+SOUND_OK = False
+
+
+def synth(f0, f1, dur, vol=0.3, wave="square", vib=0.0):
+    n = int(RATE * dur)
+    out = []
+    phase = 0.0
+    for i in range(n):
+        t = i / n
+        if wave == "meow":
+            f = 520 + 380 * math.sin(math.pi * t) - 120 * t
+        else:
+            f = f0 + (f1 - f0) * t
+        if vib:
+            f *= 1 + vib * math.sin(i / RATE * 6.2832 * 7)
+        phase += f / RATE
+        ph = phase % 1.0
+        if wave == "square":
+            v = 1.0 if ph < 0.5 else -1.0
+        elif wave == "sine":
+            v = math.sin(6.2832 * ph)
+        elif wave == "tri":
+            v = 4 * abs(ph - 0.5) - 1
+        elif wave == "noise":
+            v = random.uniform(-1, 1)
+        elif wave == "meow":
+            v = (math.sin(6.2832 * ph) + 0.5 * math.sin(12.5664 * ph)
+                 + 0.25 * math.sin(18.85 * ph)) / 1.75
+        else:
+            v = 0
+        env = math.sin(math.pi * t) ** 0.6 if wave == "meow" else (1 - t) ** 1.4
+        env *= min(1.0, i / 80)
+        out.append(int(v * env * vol * 32767))
+    return out
+
+
+def seq(notes, wave="square", vol=0.25):
+    out = []
+    for f, d in notes:
+        out += synth(f, f, d, vol, wave) if f else [0] * int(RATE * d)
+    return out
+
+
+def to_sound(samples):
+    return pygame.mixer.Sound(buffer=array("h", samples).tobytes())
+
+
+def init_sound():
+    global MUSIC_CH
+    try:
+        pygame.mixer.init(RATE, -16, 1, 512)
+    except Exception:
+        return False
+    try:
+        SND["launch"] = to_sound(synth(300, 700, 0.12, 0.25, "square"))
+        SND["paddle"] = to_sound(synth(330, 260, 0.08, 0.3, "tri"))
+        SND["wall"] = to_sound(synth(200, 160, 0.05, 0.2, "tri"))
+        SND["tough"] = to_sound(synth(220, 150, 0.09, 0.3, "square"))
+        SND["break1"] = to_sound(synth(700, 1100, 0.10, 0.25, "square"))
+        SND["break2"] = to_sound(synth(800, 1250, 0.10, 0.25, "square"))
+        SND["meow"] = to_sound(synth(0, 0, 0.45, 0.35, "meow", vib=0.03))
+        SND["fish"] = to_sound(seq([(660, 0.06), (880, 0.06), (1100, 0.10)], "square", 0.22))
+        SND["lose"] = to_sound(seq([(440, 0.12), (370, 0.12), (294, 0.12), (220, 0.25)], "tri", 0.35))
+        SND["over"] = to_sound(seq([(392, 0.2), (330, 0.2), (262, 0.2), (196, 0.5)], "tri", 0.4))
+        SND["level"] = to_sound(seq([(523, 0.08), (659, 0.08), (784, 0.08), (1047, 0.2)], "square", 0.22))
+        SND["select"] = to_sound(synth(880, 1100, 0.05, 0.2, "square"))
+        SND["skill"] = to_sound(seq([(392, 0.05), (523, 0.05), (659, 0.05), (784, 0.05), (1047, 0.14)], "square", 0.25))
+        SND["shoot"] = to_sound(synth(1300, 300, 0.14, 0.22, "square"))
+        SND["bosshit"] = to_sound(synth(180, 90, 0.12, 0.35, "square"))
+        SND["boom"] = to_sound([int(a * 0.5 + b * 0.6) for a, b in zip(
+            synth(0, 0, 0.4, 0.4, "noise"), synth(160, 40, 0.4, 0.5, "sine"))])
+        SND["boss"] = to_sound(seq([(196, 0.15), (147, 0.15), (110, 0.35)], "tri", 0.4))
+        SND["ready"] = to_sound(seq([(988, 0.05), (1319, 0.09)], "square", 0.18))
+        SND["warn"] = to_sound(seq([(1000, 0.05), (0, 0.04), (1000, 0.05)], "square", 0.2))
+        SND["dive"] = to_sound(synth(900, 150, 0.25, 0.3, "square"))
+        SND["upgrade"] = to_sound(seq([(523, 0.07), (659, 0.07), (784, 0.07), (1047, 0.07), (1319, 0.07), (1568, 0.2)], "square", 0.22))
+        # gacha
+        SND["gacha_tick"] = to_sound(synth(500, 800, 0.04, 0.18, "square"))
+        SND["gacha_dup"] = to_sound(seq([(440, 0.06), (330, 0.1)], "tri", 0.3))
+        SND["gacha_rare"] = to_sound(seq([(523, 0.07), (659, 0.07), (784, 0.07), (1047, 0.07),
+                                          (1319, 0.07), (1568, 0.22)], "square", 0.24))
+        SND["gacha_op"] = to_sound(seq([(523, 0.07), (659, 0.07), (784, 0.07), (1047, 0.07),
+                                        (784, 0.07), (1047, 0.07), (1319, 0.07), (1568, 0.07),
+                                        (2093, 0.35)], "square", 0.24))
+        SND["coin"] = to_sound(seq([(988, 0.05), (1319, 0.12)], "square", 0.2))
+        melody = [(523, .16), (659, .16), (784, .16), (659, .16),
+                  (587, .16), (698, .16), (880, .16), (698, .16),
+                  (523, .16), (659, .16), (784, .16), (1047, .16),
+                  (988, .16), (784, .16), (659, .16), (0, .16)]
+        bass = [(131, .32), (165, .32), (147, .32), (175, .32),
+                (131, .32), (165, .32), (196, .32), (131, .32)]
+        m = seq(melody, "square", 0.07)
+        b = seq(bass, "tri", 0.18)
+        n = min(len(m), len(b))
+        SND["music"] = to_sound([max(-32767, min(32767, m[i] + b[i])) for i in range(n)])
+        MUSIC_CH = pygame.mixer.Channel(0)
+        return True
+    except Exception:
+        return False
+
+
+def sfx(name):
+    if SOUND_OK and name in SND:
+        SND[name].play()
+
+
+def music_update(play, paused=False):
+    if not SOUND_OK or MUSIC_CH is None:
+        return
+    if play and music_on:
+        if not MUSIC_CH.get_busy():
+            MUSIC_CH.play(SND["music"], loops=-1)
+        if paused:
+            MUSIC_CH.pause()
+        else:
+            MUSIC_CH.unpause()
+    else:
+        MUSIC_CH.stop()

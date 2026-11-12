@@ -907,3 +907,825 @@ def draw_proj(surf, x, y, kind):
 
 HIT_MSG = {"cheese": "AUW! KENA KEJU", "bone": "AUW! KENA TULANG",
            "ink": "AUW! KENA TINTA", "dive": "AUW! KENA CAKAR"}
+
+# ---------------------------------------------------------------- Upgrade kucing
+UPGRADES = {
+    "speed": dict(title=["GESIT"], desc=["Kucing lari", "lebih cepat 20%"]),
+    "width": dict(title=["BADAN", "PANJANG"], desc=["Badan kucing", "lebih lebar +4"]),
+    "cd": dict(title=["COOLDOWN", "CEPAT"], desc=["Skill siap 15%", "lebih cepat"]),
+    "life": dict(title=["HATI", "CADANGAN"], desc=["+1 nyawa", "(penuh: +100", "skor)"]),
+    "power": dict(title=["SKILL", "PERKASA"], desc=["Skill makin", "kuat dan lama"]),
+    "magnet": dict(title=["MAGNET", "IKAN"], desc=["Ikan tertarik", "ke arah kucing"]),
+    "poison": dict(title=["CAKAR", "RACUN"], desc=["Bola kena boss", "+1 damage"]),
+}
+UPG_MAX = 3
+UPG_CW, UPG_CH, UPG_Y = 60, 82, 32
+
+
+def upg_rect(i, n):
+    total = n * UPG_CW + (n - 1) * 4
+    return pygame.Rect((LW - total) // 2 + i * (UPG_CW + 4), UPG_Y, UPG_CW, UPG_CH)
+
+
+# ---------------------------------------------------------------- Layout menu
+CARD_COLS, CARD_W, CARD_H, CARD_X0, CARD_Y0, CARD_GX, CARD_GY = 5, 36, 38, 6, 19, 38, 41
+GBTN = [pygame.Rect(10, 108, 56, 24), pygame.Rect(72, 108, 56, 24), pygame.Rect(134, 108, 56, 24)]
+PAUSE_ITEMS = 3
+
+
+def card_rect(i):
+    return pygame.Rect(CARD_X0 + (i % CARD_COLS) * CARD_GX, CARD_Y0 + (i // CARD_COLS) * CARD_GY,
+                       CARD_W, CARD_H)
+
+
+def pmenu_rect(i):
+    return pygame.Rect(54, 60 + i * 16, 92, 13)
+
+
+# ---------------------------------------------------------------- Game
+class Game:
+    def __init__(self):
+        self.state = "title"       # title | select | gacha | play | pause | upgrade | over
+        self.hi = SAVE["hi"]
+        self.t = 0
+        self.char = SAVE["char"]
+        self.sel = self.char
+        self.stars = [(random.randrange(LW), random.randrange(LH), random.choice((0, 0, 1, 2)))
+                      for _ in range(46)]
+        self.shake = 0
+        self.fade = FADE_T
+        self.msg = ""
+        self.msg_t = 0
+        self.pmenu = 0
+        # gacha
+        self.gstate = "idle"       # idle | open | reveal
+        self.gtimer = 0
+        self.gsel = 0
+        self.gres = []
+        self.gidx = 0
+        self.gbest = "C"
+        self.gmsg = ""
+        self.gmsg_t = 0
+        self.reset()
+
+    @property
+    def cat(self):
+        return CATS[self.char]
+
+    @property
+    def op(self):
+        return bool(self.cat.get("op"))
+
+    @property
+    def max_lives(self):
+        return 5 + (2 if self.op else 0)
+
+    @property
+    def shield_on(self):
+        return self.skill_active > 0 and (self.char == 5 or self.op)
+
+    def set_state(self, s, fade=True):
+        self.state = s
+        if fade:
+            self.fade = FADE_T
+
+    def reset(self):
+        self.score = 0
+        self.lives = 3 + (2 if self.op else 0)
+        self.level = 1
+        self.paddle = Paddle(self.cat["pal"])
+        self.particles = []
+        self.fishes = []
+        self.floaters = []
+        self.shots = []
+        self.rings = []
+        self.projs = []
+        self.skill_cd = 0
+        self.skill_active = 0
+        self.skill_cd_max = 1
+        self.skill_dur_max = 1
+        self.up = {k: 0 for k in UPGRADES}
+        self.cat_level = 1
+        self.upgrade_delay = 0
+        self.upg_choices = []
+        self.upg_sel = 0
+        self.run_coins = 0
+        self.over_bonus = 0
+        self.refresh_stats()
+        self.build_level()
+
+    def refresh_stats(self):
+        p = self.paddle
+        spd = 3.4 * (1 + 0.2 * self.up["speed"])
+        p.speed = spd * (1.2 if self.op else 1.0)
+        p.base_w = 30 + 4 * self.up["width"] + (10 if self.op else 0)
+        mult = 1.0
+        if self.skill_active > 0:
+            if self.char == 0:
+                mult = 2.0
+            elif self.op:
+                mult = 1.5
+        p.set_width(p.base_w * mult)
+        p.tier = self.cat_level - 1
+
+    def gain_coins(self, n):
+        SAVE["coins"] += n
+        self.run_coins += n
+
+    def build_level(self):
+        self.bricks = []
+        self.balls = [Ball()]
+        self.shots.clear()
+        self.projs.clear()
+        self.boss = Boss(self.level) if self.level % 3 == 0 else None
+        if self.boss:
+            rows, top = 3, 58
+            sfx("boss")
+        else:
+            rows, top = min(5 + self.level // 2, 7), 25
+        cols = 12
+        gap = 2
+        total_w = cols * Brick.W + (cols - 1) * gap
+        ox = (LW - total_w) // 2
+        for r in range(rows):
+            for c in range(cols):
+                if self.level > 1 and (r + c) % (6 - min(self.level, 4)) == 0 and random.random() < 0.5:
+                    continue
+                roll = random.random()
+                kind = "t" if roll < 0.15 else ("f" if roll < 0.23 else "n")
+                self.bricks.append(Brick(ox + c * (Brick.W + gap), top + r * (Brick.H + gap),
+                                         kind, ROW_COLORS[(r + (3 if self.boss else 0)) % len(ROW_COLORS)]))
+        self.speed = min(1.9 + 0.15 * (self.level - 1), 3.2)
+
+    def burst(self, x, y, color, n=8):
+        for _ in range(n):
+            a = random.random() * math.tau
+            s = random.uniform(0.3, 1.4)
+            self.particles.append([x, y, math.cos(a) * s, math.sin(a) * s - 0.3,
+                                   random.randint(15, 30), color])
+
+    def floater(self, s, x, y, color=WHITE):
+        self.floaters.append([s, x, y, 50, color])
+
+    # --- nyawa
+    def lose_life(self, reset_ball):
+        self.lives -= 1
+        self.shake = 10
+        p = self.paddle
+        self.burst(p.cx, p.y, YARN, 12)
+        if self.lives <= 0:
+            self.hi = max(self.hi, self.score)
+            SAVE["hi"] = self.hi
+            self.over_bonus = self.score // 40
+            self.gain_coins(self.over_bonus)
+            save_game()
+            self.set_state("over", fade=False)
+            music_update(False)
+            sfx("over")
+            return
+        sfx("lose")
+        if reset_ball:
+            self.balls = [Ball()]
+
+    # --- pause
+    def pause(self):
+        if self.state != "play":
+            return
+        self.pmenu = 0
+        self.set_state("pause", fade=False)
+        music_update(True, True)
+        sfx("select")
+
+    def resume(self):
+        if self.state != "pause":
+            return
+        self.set_state("play", fade=False)
+        music_update(True, False)
+        sfx("select")
+
+    def go_menu(self):
+        self.hi = max(self.hi, self.score)
+        SAVE["hi"] = self.hi
+        save_game()
+        music_update(False)
+        self.set_state("select")
+        self.sel = self.char
+
+    def pmenu_do(self, i):
+        global music_on
+        if i == 0:
+            self.resume()
+        elif i == 1:
+            music_on = not music_on
+            music_update(True, True)
+            sfx("select")
+        else:
+            self.go_menu()
+
+    # --- skill
+    def use_skill(self):
+        if self.state != "play" or self.skill_cd > 0:
+            return
+        c = self.cat
+        p = self.paddle
+        src = self.balls[0]
+        if c.get("needs_ball") and src.stuck:
+            self.floater("LUNCURKAN BOLA DULU!", -1, p.y - 22, PINK)
+            return
+        pw = self.up["power"]
+        self.skill_cd_max = max(120, int(c["cd"] * (1 - 0.15 * self.up["cd"])))
+        self.skill_cd = self.skill_cd_max
+        if c["dur"] > 0:
+            self.skill_dur_max = int(c["dur"] * (1 + 0.25 * pw))
+            self.skill_active = self.skill_dur_max
+        else:
+            self.skill_active = 0
+        sfx("skill")
+        self.floater(c["skill"].upper() + "!", -1, p.y - 24, YELLOW)
+        self.burst(p.cx, p.y, YELLOW, 14)
+        if self.char == 0:
+            self.refresh_stats()
+        elif self.char == 3:
+            sfx("shoot")
+            n = 3 + 2 * pw
+            for i in range(n):
+                self.shots.append([p.cx + (i - (n - 1) / 2) * 8, float(p.y)])
+        elif self.char == 4:
+            for k in range(2 + pw):
+                if len(self.balls) >= 8:
+                    break
+                nb = Ball()
+                nb.stuck = False
+                ang = math.atan2(src.vy, src.vx) + 0.45 * (k // 2 + 1) * (1 if k % 2 == 0 else -1)
+                sp = math.hypot(src.vx, src.vy)
+                nb.vx, nb.vy = math.cos(ang) * sp, math.sin(ang) * sp
+                nb.x, nb.y = src.x, src.y
+                self.balls.append(nb)
+        elif self.char == 6:
+            self.explode(src.x, src.y, 28 + 6 * pw, 3 + pw)
+        elif self.char == 7:
+            for _ in range(6 + 2 * pw):
+                self.fishes.append([random.uniform(8, LW - 16), -random.uniform(0, 45), "rain"])
+        elif self.op:        # Murka Dewa
+            self.refresh_stats()
+            sfx("shoot")
+            self.shake = 8
+            self.rings.append([p.cx, p.y, 4.0, 16])
+            for i in range(7):
+                self.shots.append([p.cx + (i - 3) * 7, float(p.y)])
+
+    def explode(self, x, y, radius, boss_dmg):
+        sfx("boom")
+        self.shake = 6
+        self.rings.append([x, y, 4.0, 14])
+        for br in self.bricks[:]:
+            if math.hypot(br.rect.centerx - x, br.rect.centery - y) <= radius:
+                br.hp = 1
+                self.hit_brick(br)
+        if self.boss and math.hypot(self.boss.rect.centerx - x, self.boss.rect.centery - y) <= radius + 14:
+            self.boss_hit(boss_dmg)
+        self.burst(x, y, (255, 160, 60), 20)
+
+    def update_skill(self):
+        if self.skill_active > 0:
+            self.skill_active -= 1
+            if self.op and self.skill_active % 14 == 0 and self.skill_active > 0:
+                p = self.paddle
+                for dx in (-8, 8):
+                    self.shots.append([p.cx + dx, float(p.y)])
+            if self.skill_active == 0 and (self.char == 0 or self.op):
+                self.refresh_stats()
+        if self.skill_cd > 0:
+            self.skill_cd -= 1
+            if self.skill_cd == 0:
+                sfx("ready")
+        pierce = self.skill_active > 0 and (self.char == 2 or self.op)
+        for b in self.balls:
+            b.pierce = pierce
+
+        for s in self.shots[:]:
+            s[1] -= 4
+            hit = None
+            for br in self.bricks:
+                if br.rect.collidepoint(int(s[0]), int(s[1])):
+                    hit = br
+                    break
+            if hit:
+                self.shots.remove(s)
+                if self.op:
+                    hit.hp = 1
+                self.hit_brick(hit)
+            elif self.boss and self.boss.rect.collidepoint(int(s[0]), int(s[1])):
+                self.shots.remove(s)
+                self.boss_hit(2 if self.op else 1)
+            elif s[1] < 0:
+                self.shots.remove(s)
+
+    # --- upgrade
+    def open_upgrade(self):
+        pool = [k for k in UPGRADES if k == "life" or self.up[k] < UPG_MAX]
+        self.upg_choices = random.sample(pool, min(3, len(pool)))
+        self.upg_sel = 0
+        self.set_state("upgrade")
+        sfx("upgrade")
+
+    def apply_upgrade(self, i):
+        if not (0 <= i < len(self.upg_choices)):
+            return
+        key = self.upg_choices[i]
+        if key == "life":
+            if self.lives < self.max_lives:
+                self.lives += 1
+            else:
+                self.score += 100
+        else:
+            self.up[key] += 1
+        self.cat_level += 1
+        self.refresh_stats()
+        self.set_state("play")
+        sfx("meow")
+        self.floater("KUCING LV %d!" % self.cat_level, -1, self.paddle.y - 24, YELLOW)
+        self.burst(self.paddle.cx, self.paddle.y, YELLOW, 24)
+
+    # --- gacha
+    def open_gacha(self):
+        self.set_state("gacha")
+        self.gstate = "idle"
+        self.gsel = 0
+        self.gmsg_t = 0
+        self.particles.clear()
+        music_update(False)
+        sfx("select")
+
+    def start_pull(self, n):
+        cost = GACHA_COST1 if n == 1 else GACHA_COST10
+        if SAVE["coins"] < cost:
+            self.gmsg = "KOIN KURANG! Main dulu ya"
+            self.gmsg_t = 100
+            sfx("lose")
+            return
+        SAVE["coins"] -= cost
+        SAVE["pulls"] += n
+        res = []
+        for i in range(n):
+            min_r = "R" if (n == 10 and i == 9 and all(x["r"] == "C" for x in res)) else None
+            r = roll_rarity(min_r)
+            pool = [k for k, c in enumerate(CATS) if c["rarity"] == r]
+            idx = random.choice(pool)
+            new = idx not in SAVE["owned"]
+            refund = 0
+            if new:
+                SAVE["owned"] = sorted(SAVE["owned"] + [idx])
+            else:
+                refund = RARITY[r]["refund"]
+                SAVE["coins"] += refund
+            res.append(dict(idx=idx, r=r, new=new, refund=refund))
+        save_game()
+        order = "CREO"
+        self.gres = res
+        self.gidx = 0
+        self.gbest = max((x["r"] for x in res), key=order.index)
+        self.gstate = "open"
+        self.gtimer = 80
+        sfx("gacha_tick")
+
+    def reveal_start(self):
+        self.gstate = "reveal"
+        self.gtimer = 0
+        r = self.gres[self.gidx]["r"]
+        col = RARITY[r]["col"]
+        self.burst(100, 52, col, 18 if r in ("C", "R") else 36)
+        self.burst(100, 52, WHITE, 8)
+        sfx({"C": "gacha_dup", "R": "level", "E": "gacha_rare", "O": "gacha_op"}[r])
+        if r == "O":
+            self.shake = 16
+        if r in ("E", "O"):
+            sfx("meow")
+
+    def action_gacha(self):
+        if self.gstate == "idle":
+            if self.gsel == 0:
+                self.start_pull(1)
+            elif self.gsel == 1:
+                self.start_pull(10)
+            else:
+                self.set_state("select")
+                self.sel = GACHA_SLOT
+        elif self.gstate == "open":
+            self.gtimer = 0
+        else:
+            self.gidx += 1
+            if self.gidx >= len(self.gres):
+                self.gstate = "idle"
+                sfx("select")
+            else:
+                self.reveal_start()
+
+    def gbtn_at(self, pos):
+        px, py = pos[0] / SCALE, pos[1] / SCALE
+        for i, r in enumerate(GBTN):
+            if r.collidepoint(px, py):
+                return i
+        return None
+
+    # --- input
+    def launch(self):
+        b = self.balls[0]
+        if b.stuck:
+            b.stuck = False
+            vx = random.uniform(-0.6, 0.6) * self.speed
+            b.vx = vx
+            b.vy = -math.sqrt(self.speed ** 2 - vx ** 2)
+            sfx("launch")
+
+    def card_at(self, pos):
+        px, py = pos[0] / SCALE, pos[1] / SCALE
+        for i in range(N_SLOTS):
+            if card_rect(i).collidepoint(px, py):
+                return i
+        return None
+
+    def upg_at(self, pos):
+        px, py = pos[0] / SCALE, pos[1] / SCALE
+        n = len(self.upg_choices)
+        for i in range(n):
+            if upg_rect(i, n).collidepoint(px, py):
+                return i
+        return None
+
+    def pmenu_at(self, pos):
+        px, py = pos[0] / SCALE, pos[1] / SCALE
+        for i in range(PAUSE_ITEMS):
+            if pmenu_rect(i).collidepoint(px, py):
+                return i
+        return None
+
+    def on_escape(self):
+        st = self.state
+        if st == "title":
+            save_game()
+            return False
+        if st == "play":
+            self.pause()
+        elif st == "pause":
+            self.resume()
+        elif st == "select":
+            self.set_state("title")
+        elif st == "gacha":
+            if self.gstate == "idle":
+                self.set_state("select")
+                self.sel = GACHA_SLOT
+            else:
+                self.gstate = "idle"
+        elif st == "over":
+            self.set_state("title")
+        return True
+
+    def handle_event(self, e):
+        global music_on, crt_on
+        if e.type == pygame.QUIT:
+            save_game()
+            return False
+        if FOCUS_LOST is not None and e.type == FOCUS_LOST and self.state == "play":
+            self.pause()
+        if e.type == pygame.KEYDOWN:
+            k = e.key
+            if k == pygame.K_ESCAPE:
+                return self.on_escape()
+            if k == pygame.K_p:
+                if self.state == "play":
+                    self.pause()
+                elif self.state == "pause":
+                    self.resume()
+            elif k in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_KP_ENTER):
+                self.action()
+            elif k in (pygame.K_e, pygame.K_LSHIFT, pygame.K_RSHIFT):
+                self.use_skill()
+            if k == pygame.K_m:
+                music_on = not music_on
+                music_update(self.state in ("play", "upgrade", "pause"), self.state == "pause")
+            if k == pygame.K_v:
+                crt_on = not crt_on
+            if k == pygame.K_g and self.state in ("title", "select", "over"):
+                self.open_gacha()
+            left = k in (pygame.K_LEFT, pygame.K_a)
+            right = k in (pygame.K_RIGHT, pygame.K_d)
+            up = k in (pygame.K_UP, pygame.K_w)
+            down = k in (pygame.K_DOWN, pygame.K_s)
+            if self.state == "select":
+                if left:
+                    self.sel = (self.sel - 1) % N_SLOTS
+                    sfx("select")
+                if right:
+                    self.sel = (self.sel + 1) % N_SLOTS
+                    sfx("select")
+                if up or down:
+                    self.sel = (self.sel + CARD_COLS) % N_SLOTS
+                    sfx("select")
+            elif self.state == "pause":
+                if up:
+                    self.pmenu = (self.pmenu - 1) % PAUSE_ITEMS
+                    sfx("select")
+                if down:
+                    self.pmenu = (self.pmenu + 1) % PAUSE_ITEMS
+                    sfx("select")
+            elif self.state == "gacha" and self.gstate == "idle":
+                if left:
+                    self.gsel = (self.gsel - 1) % 3
+                    sfx("select")
+                if right:
+                    self.gsel = (self.gsel + 1) % 3
+                    sfx("select")
+                if k == pygame.K_1:
+                    self.start_pull(1)
+                if k == pygame.K_2:
+                    self.start_pull(10)
+            elif self.state == "upgrade":
+                n = len(self.upg_choices)
+                if left:
+                    self.upg_sel = (self.upg_sel - 1) % n
+                    sfx("select")
+                if right:
+                    self.upg_sel = (self.upg_sel + 1) % n
+                    sfx("select")
+                for j, kc in enumerate((pygame.K_1, pygame.K_2, pygame.K_3)):
+                    if k == kc:
+                        self.apply_upgrade(j)
+            elif self.state == "over":
+                if k == pygame.K_c:
+                    self.set_state("select")
+                    self.sel = self.char
+                    sfx("select")
+        if e.type == pygame.MOUSEBUTTONDOWN:
+            if e.button == 1:
+                if self.state == "select":
+                    i = self.card_at(e.pos)
+                    if i is not None:
+                        self.sel = i
+                        self.action()
+                elif self.state == "upgrade":
+                    i = self.upg_at(e.pos)
+                    if i is not None:
+                        self.apply_upgrade(i)
+                elif self.state == "pause":
+                    i = self.pmenu_at(e.pos)
+                    if i is not None:
+                        self.pmenu_do(i)
+                elif self.state == "gacha":
+                    if self.gstate == "idle":
+                        i = self.gbtn_at(e.pos)
+                        if i is not None:
+                            self.gsel = i
+                            self.action_gacha()
+                    else:
+                        self.action_gacha()
+                else:
+                    self.action()
+            elif e.button == 3:
+                self.use_skill()
+        if e.type == pygame.MOUSEMOTION:
+            if self.state == "play":
+                self.paddle.set_center(e.pos[0] / SCALE)
+            elif self.state == "select":
+                i = self.card_at(e.pos)
+                if i is not None and i != self.sel:
+                    self.sel = i
+                    sfx("select")
+            elif self.state == "upgrade":
+                i = self.upg_at(e.pos)
+                if i is not None and i != self.upg_sel:
+                    self.upg_sel = i
+                    sfx("select")
+            elif self.state == "pause":
+                i = self.pmenu_at(e.pos)
+                if i is not None and i != self.pmenu:
+                    self.pmenu = i
+                    sfx("select")
+            elif self.state == "gacha" and self.gstate == "idle":
+                i = self.gbtn_at(e.pos)
+                if i is not None and i != self.gsel:
+                    self.gsel = i
+                    sfx("select")
+        return True
+
+    def action(self):
+        if self.state == "title":
+            self.set_state("select")
+            self.sel = self.char
+            sfx("select")
+        elif self.state == "select":
+            if self.sel == GACHA_SLOT:
+                self.open_gacha()
+            elif self.sel in SAVE["owned"]:
+                self.char = self.sel
+                SAVE["char"] = self.char
+                self.reset()
+                self.set_state("play")
+                sfx("meow")
+                music_update(True)
+            else:
+                self.msg = "TERKUNCI! Buka lewat GACHA"
+                self.msg_t = 100
+                sfx("lose")
+        elif self.state == "play":
+            self.launch()
+        elif self.state == "pause":
+            self.pmenu_do(self.pmenu)
+        elif self.state == "upgrade":
+            self.apply_upgrade(self.upg_sel)
+        elif self.state == "gacha":
+            self.action_gacha()
+        elif self.state == "over":
+            self.reset()
+            self.set_state("play")
+            music_update(True)
+
+    # --- update
+    def update_fx(self):
+        for p in self.particles:
+            p[0] += p[2]
+            p[1] += p[3]
+            p[3] += 0.05
+            p[4] -= 1
+        self.particles = [p for p in self.particles if p[4] > 0]
+        for f in self.floaters:
+            f[2] -= 0.3
+            f[3] -= 1
+        self.floaters = [f for f in self.floaters if f[3] > 0]
+        for r in self.rings:
+            r[2] += 2.0
+            r[3] -= 1
+        self.rings = [r for r in self.rings if r[3] > 0]
+
+    def update_gacha(self):
+        self.update_fx()
+        if self.gmsg_t > 0:
+            self.gmsg_t -= 1
+        if self.gstate == "open":
+            self.gtimer -= 1
+            if self.gtimer > 0 and self.gtimer % 10 == 0:
+                sfx("gacha_tick")
+            if self.t % 2 == 0:
+                a = random.random() * math.tau
+                self.particles.append([100 + math.cos(a) * 20, 58 + math.sin(a) * 20,
+                                       -math.cos(a) * 0.5, -math.sin(a) * 0.5, 14,
+                                       RARITY[self.gbest]["col"]])
+            if self.gtimer <= 0:
+                self.reveal_start()
+        elif self.gstate == "reveal":
+            self.gtimer += 1
+            r = self.gres[self.gidx]["r"]
+            if r in ("E", "O") and self.t % 3 == 0:
+                self.burst(100 + random.randint(-30, 30), 52 + random.randint(-14, 14),
+                           RARITY[r]["col"], 2)
+
+    def update(self):
+        self.t += 1
+        if self.shake > 0:
+            self.shake -= 1
+        if self.fade > 0:
+            self.fade -= 1
+        if self.msg_t > 0:
+            self.msg_t -= 1
+        if self.state == "gacha":
+            self.update_gacha()
+            return
+        if self.state != "play":
+            return
+
+        keys = pygame.key.get_pressed()
+        d = (keys[pygame.K_RIGHT] or keys[pygame.K_d]) - (keys[pygame.K_LEFT] or keys[pygame.K_a])
+        if d:
+            self.paddle.move(d)
+
+        self.update_skill()
+        self.update_balls()
+        if self.state != "play":
+            return
+        self.update_fishes()
+        self.update_boss()
+        if self.state != "play":
+            return
+
+        self.update_fx()
+
+        if self.upgrade_delay > 0:
+            self.upgrade_delay -= 1
+            if self.upgrade_delay == 0:
+                self.open_upgrade()
+                return
+
+        if not self.bricks and not self.boss and self.upgrade_delay == 0:
+            self.level += 1
+            sfx("level")
+            self.gain_coins(10)
+            self.fishes.clear()
+            self.build_level()
+            if self.boss:
+                self.floater("BOSS: %s!" % self.boss.name, -1, LH // 2 - 6, (255, 110, 130))
+            else:
+                self.floater("LEVEL %d" % self.level, -1, LH // 2 - 6, YELLOW)
+
+    def update_balls(self):
+        b0 = self.balls[0]
+        p = self.paddle
+        if b0.stuck:
+            b0.x = p.cx
+            b0.y = p.y - b0.R - 2
+            b0.trail.clear()
+            return
+        if self.char == 1 and self.skill_active > 0:
+            m = 0.5
+        elif self.op and self.skill_active > 0:
+            m = 0.8
+        else:
+            m = 1.0
+        for b in self.balls[:]:
+            if self.step_ball(b, m):
+                self.balls.remove(b)
+        if not self.balls:
+            self.lose_life(True)
+
+    def step_ball(self, b, m):
+        p = self.paddle
+        dx, dy = b.vx * m, b.vy * m
+        b.trail.append((b.x, b.y))
+        b.trail = b.trail[-8:]
+
+        b.x += dx
+        if b.x - b.R < 0:
+            b.x = b.R
+            b.vx = abs(b.vx)
+            sfx("wall")
+        elif b.x + b.R > LW:
+            b.x = LW - b.R
+            b.vx = -abs(b.vx)
+            sfx("wall")
+        self.ball_vs_bricks(b, "x", dx)
+
+        b.y += dy
+        if b.y - b.R < 0:
+            b.y = b.R
+            b.vy = abs(b.vy)
+            sfx("wall")
+        self.ball_vs_bricks(b, "y", dy)
+
+        if b.vy > 0 and p.rect.colliderect(b.rect):
+            off = (b.x - p.cx) / (p.w / 2)
+            off = max(-1, min(1, off))
+            ang = off * math.radians(65)
+            b.vx = self.speed * math.sin(ang)
+            b.vy = -self.speed * math.cos(ang)
+            b.y = p.y - b.R - 1
+            sfx("paddle")
+
+        if self.shield_on and b.vy > 0 and b.y + b.R >= LH - 3:
+            b.vy = -abs(b.vy)
+            b.y = LH - 3 - b.R
+            sfx("paddle")
+
+        return b.y - b.R > LH
+
+    def ball_vs_bricks(self, b, axis, step):
+        dmg = 1 + self.up["poison"] + (1 if self.op else 0)
+        if b.pierce:
+            for br in self.bricks[:]:
+                if br.rect.colliderect(b.rect):
+                    br.hp = 1
+                    self.hit_brick(br)
+            if self.boss and self.boss.rect.colliderect(b.rect):
+                self.boss_hit(dmg)
+            return
+        for br in self.bricks:
+            if br.rect.colliderect(b.rect):
+                self.bounce(b, axis, step)
+                self.hit_brick(br)
+                return
+        if self.boss and self.boss.rect.colliderect(b.rect):
+            self.bounce(b, axis, step)
+            self.boss_hit(dmg)
+
+    @staticmethod
+    def bounce(b, axis, step):
+        if axis == "x":
+            b.x -= step
+            b.vx = -b.vx
+        else:
+            b.y -= step
+            b.vy = -b.vy
+
+    def hit_brick(self, br):
+        if br not in self.bricks:
+            return
+        if br.hit():
+            self.bricks.remove(br)
+            self.score += 10 if br.kind == "t" else 5
+            self.burst(br.rect.centerx, br.rect.centery,
+                       br.color if br.kind != "t" else (170, 170, 190))
+            sfx(random.choice(["break1", "break2"]))
+            if br.kind == "f":
+                self.fishes.append([br.rect.left + 3.0, float(br.rect.top), "life"])
+        else:
+            self.burst(br.rect.centerx, br.rect.centery, WHITE, 3)
+            self.score += 1
+            sfx("tough")

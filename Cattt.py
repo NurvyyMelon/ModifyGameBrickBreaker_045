@@ -2172,3 +2172,185 @@ class Game:
             self.draw_reveal()
             self.draw_fx()
             return
+        
+# kapsul
+        bx, by = 100, 58
+        if self.gstate == "open":
+            amp = 1 + (80 - self.gtimer) / 14
+            bx += int(math.sin(self.t * 1.7) * amp)
+            by += int(math.cos(self.t * 2.3) * amp * 0.5)
+            col = RARITY[self.gbest]["col"]
+            gl = 20 + int(math.sin(self.t * 0.4) * 3)
+            pygame.draw.circle(c, shade(col, -140), (bx, by), gl, 1)
+            pygame.draw.circle(c, shade(col, -90), (bx, by), gl - 4, 1)
+            if self.gtimer < 10:
+                pygame.draw.circle(c, WHITE, (bx, by), 12 + (10 - self.gtimer) * 4)
+        else:
+            by += int(math.sin(self.t * 0.08) * 2)
+            col = rainbow_color(self.t // 5)
+        draw_capsule(c, bx, by, 14, col)
+        self.draw_fx()
+
+        txt("Epik pasti dalam %d tarikan" % (PITY_EPIC - SAVE["pity_epic"]), "xs",
+            RARITY["E"]["col"], cx=LW // 2, y=76)
+        txt("OP pasti dalam %d tarikan" % (PITY_OP - SAVE["pity_op"]), "xs",
+            RARITY["O"]["col"], cx=LW // 2, y=85)
+        for k, cx in (("C", 28), ("R", 76), ("E", 124), ("O", 170)):
+            txt("%s %d%%" % (RARITY[k]["name"], RARITY[k]["w"]), "xs", RARITY[k]["col"], cx=cx, y=96)
+
+        idle = self.gstate == "idle"
+        costs = (GACHA_COST1, GACHA_COST10, 0)
+        labels = ("PUTAR x1", "PUTAR x10", "KEMBALI")
+        for i, r in enumerate(GBTN):
+            sel = idle and i == self.gsel
+            can = i == 2 or SAVE["coins"] >= costs[i]
+            panel(c, r, fill=(52, 38, 94, 240) if sel else (24, 16, 48, 230),
+                  border=YELLOW if sel else (100, 85, 150))
+            if sel:
+                pygame.draw.rect(c, YELLOW, r.inflate(2, 2), 1)
+            txt(labels[i], "s", (YELLOW if sel else WHITE) if can else (130, 120, 160),
+                cx=r.centerx, y=r.y + 3)
+            if i < 2:
+                draw_coin(c, r.centerx - 9, r.y + 18)
+                txt("%d" % costs[i], "xs", YELLOW if can else (130, 120, 160), x=r.centerx - 4, y=r.y + 14)
+            else:
+                txt("ESC", "xs", GRAY, cx=r.centerx, y=r.y + 14)
+        if self.gmsg_t > 0 and (self.t // 6) % 2:
+            txt(self.gmsg, "s", RED, cx=LW // 2, y=137)
+        elif idle and (self.t // 30) % 2:
+            txt("panah/mouse pilih    SPASI/klik    1 = x1   2 = x10", "xs", WHITE, cx=LW // 2, y=148)
+        elif self.gstate == "open" and (self.t // 15) % 2:
+            txt("SPASI = lewati", "xs", GRAY, cx=LW // 2, y=148)
+
+    def draw_reveal(self):
+        c = canvas
+        res = self.gres[self.gidx]
+        cat = CATS[res["idx"]]
+        rar = RARITY[res["r"]]
+        col = rar["col"]
+        gt = self.gtimer
+        cx, cy = 100, 52
+        # sinar berputar
+        rays = pygame.Surface((LW, LH), pygame.SRCALPHA)
+        n = 16 if res["r"] in ("C", "R") else 24
+        for k in range(n):
+            a = k * math.tau / n + self.t * (0.012 if res["r"] != "O" else 0.03)
+            pts = [(cx, cy), (cx + math.cos(a) * 130, cy + math.sin(a) * 130),
+                   (cx + math.cos(a + 0.1) * 130, cy + math.sin(a + 0.1) * 130)]
+            pygame.draw.polygon(rays, (col[0], col[1], col[2], 48), pts)
+        c.blit(rays, (0, 0))
+        pygame.draw.circle(c, shade(col, -150), (cx, cy), 34, 1)
+        pygame.draw.circle(c, shade(col, -110), (cx, cy), 28, 1)
+        # sprite kucing 2x
+        sc = min(1.0, gt / 10)
+        if sc > 0.15:
+            tmp = pygame.Surface((50, 20), pygame.SRCALPHA)
+            pd = Paddle(cat["pal"])
+            pd.x, pd.y, pd.tier = 10, 8, 4 if res["r"] != "O" else 7
+            pd.draw(tmp, self.t)
+            big = pygame.transform.scale(tmp, (int(100 * sc), int(40 * sc)))
+            c.blit(big, (cx - big.get_width() // 2, cy - big.get_height() // 2))
+        # bintang rarity
+        ns = rar["stars"]
+        for k in range(ns):
+            draw_star(c, cx + int((k - (ns - 1) / 2) * 11), 76, 4, col)
+        if res["r"] == "O":
+            txt(cat["name"] + " NEKO", "m", None, cx=LW // 2, y=82, rainbow=True, wave=3)
+        else:
+            txt(cat["name"], "m", col, cx=LW // 2, y=82, wave=2 if res["r"] == "E" else 0)
+        txt(rar["name"], "xs", col, cx=LW // 2, y=97)
+        if res["new"]:
+            txt("BARU!", "s", GREEN if (self.t // 5) % 2 else WHITE, cx=LW // 2, y=105)
+        else:
+            txt("DUPLIKAT  +%d KOIN" % res["refund"], "s", GRAY, cx=LW // 2, y=105)
+        panel(c, (14, 117, 172, 26), border=shade(col, -40))
+        txt("SKILL: " + cat["skill"].upper(), "xs", YELLOW, cx=LW // 2, y=119)
+        txt(cat["d1"], "xs", WHITE, cx=LW // 2, y=127)
+        txt(cat["d2"], "xs", (200, 190, 230), cx=LW // 2, y=135)
+        more = len(self.gres) > 1
+        if (self.t // 30) % 2:
+            tail = "(%d/%d)" % (self.gidx + 1, len(self.gres)) if more else ""
+            txt("SPASI = lanjut  %s" % tail, "xs", WHITE, cx=LW // 2, y=148)
+        if gt < 8:      # kilatan putih
+            fl = pygame.Surface((LW, LH), pygame.SRCALPHA)
+            fl.fill((255, 255, 255, int(255 * (1 - gt / 8))))
+            c.blit(fl, (0, 0))
+
+    def draw_upgrade(self):
+        c = canvas
+        txt("KUCING NAIK LEVEL!", "m", None, cx=LW // 2, y=3, rainbow=True, wave=3)
+        txt("Boss kalah! Pilih 1 upgrade", "xs", (200, 190, 230), cx=LW // 2, y=20)
+        n = len(self.upg_choices)
+        for i, key in enumerate(self.upg_choices):
+            u = UPGRADES[key]
+            r = upg_rect(i, n)
+            sel = i == self.upg_sel
+            if sel:
+                r = r.move(0, -2)
+            panel(c, r, fill=(44, 30, 84, 240) if sel else (24, 16, 48, 230),
+                  border=YELLOW if sel else (100, 85, 150))
+            draw_upg_icon(c, key, r.centerx, r.y + 12)
+            ty = r.y + 22
+            for ln in u["title"]:
+                txt(ln, "xs", YELLOW if sel else (225, 215, 150), cx=r.centerx, y=ty)
+                ty += 7
+            ty += 2
+            if key == "life":
+                txt("+1", "xs", GREEN, cx=r.centerx, y=ty)
+            else:
+                lv = self.up[key]
+                txt("Lv %d > %d" % (lv, lv + 1), "xs", GREEN, cx=r.centerx, y=ty)
+            ty += 9
+            for ln in u["desc"]:
+                txt(ln, "xs", WHITE if sel else GRAY, cx=r.centerx, y=ty)
+                ty += 7
+            txt(str(i + 1), "xs", (150, 140, 190), x=r.x + 3, y=r.y + 2)
+        txt("1 / 2 / 3  atau  panah + ENTER  atau  klik", "xs", WHITE, cx=LW // 2, y=119)
+        pv = Paddle(self.cat["pal"])
+        pv.x = LW / 2 - pv.w / 2
+        pv.y = 136
+        pv.tier = self.cat_level  # pratinjau: tampilan setelah naik level
+        pv.draw(c, self.t)
+        txt("%s  LV %d  >  LV %d" % (self.cat["name"], self.cat_level, self.cat_level + 1),
+            "xs", YELLOW, cx=LW // 2, y=150)
+
+    def render(self):
+        global TICK
+        TICK = self.t
+        self.draw()
+        scaled = pygame.transform.scale(canvas, (WIDTH, HEIGHT))
+        screen.fill((0, 0, 0))
+        ox = oy = 0
+        if self.shake:
+            ox = random.randint(-self.shake, self.shake) * 2
+            oy = random.randint(-self.shake, self.shake) * 2
+        screen.blit(scaled, (ox, oy))
+        if crt_on:
+            screen.blit(OVERLAY, (0, 0))
+        flush_text(ox, oy)
+        if self.fade > 0:
+            FADE.set_alpha(int(255 * self.fade / FADE_T))
+            screen.blit(FADE, (0, 0))
+        pygame.display.flip()
+
+
+def main():
+    global SOUND_OK
+    load_save()
+    SOUND_OK = init_sound()
+    game = Game()
+    running = True
+    while running:
+        for e in pygame.event.get():
+            if not game.handle_event(e):
+                running = False
+        game.update()
+        game.render()
+        clock.tick(FPS)
+    save_game()
+    pygame.quit()
+    sys.exit()
+
+
+if __name__ == "__main__":
+    main()
